@@ -1,0 +1,11 @@
+[project]
+name = "telegram"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "httpx[http2]>=0.28.1",
+    "python-telegram-bot>=22.7",
+    "telegramify-markdown>=1.1.2",
+]
