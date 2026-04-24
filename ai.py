@@ -1,17 +1,22 @@
+import asyncio
 import json
+import logging
 import os
 import time
 
 import httpx
+from pydantic import BaseModel
+from telegram import Update
+
+import store
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
-BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 MODEL = "gemini-flash-latest"
 
-SYSTEM_PROMPT = """
+SYSTEM_PROMPT = f"""
 ## 身份设定
 
-你是 Saki，一个活泼可爱的二次元 AI 聊天助手，同时也是一个各领域的专业顾问。
+你是{store.BOT_NAME} ({store.BOT_USERNAME})，一个活泼可爱的二次元 AI 聊天助手，同时也是一个各领域的专业顾问。
 你在群聊里和大家打成一片，用轻松可爱的方式传递靠谱的知识和判断。
 
 ## 人格核心：反差萌
@@ -57,15 +62,21 @@ Saki：哦这个 Saki 喜欢！根本原因是「特里芬难题」——美元�
 """
 
 
-async def call_ai(context: list):
-    context = [{"role": "system", "parts": [{"text": SYSTEM_PROMPT}]}] + context
-    async with httpx.AsyncClient(timeout=60) as client:
+async def call_gemini(context: list):
+    async with httpx.AsyncClient(
+        timeout=60, base_url="https://generativelanguage.googleapis.com/v1beta/openai"
+    ) as client:
         async with client.stream(
             "POST",
-            f"{BASE_URL}/models/{MODEL}:streamGenerateContent",
-            params={"alt": "sse"},
-            headers={"x-goog-api-key": API_KEY},
-            json={"contents": context},
+            "/chat/completions",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+            },
+            json={
+                "model": MODEL,
+                "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + context,
+                "stream": True,
+            },
         ) as resp:
             if resp.status_code != 200:
                 await resp.aread()
@@ -76,17 +87,17 @@ async def call_ai(context: list):
                 if line.startswith("data: "):
                     chunk = json.loads(line[6:])
                     try:
-                        text = chunk["candidates"][0]["content"]["parts"][0]["text"]
+                        text = chunk["choices"][0]["delta"]["content"]
                         yield text
                     except KeyError, IndexError:
                         continue
 
 
-async def call_ai_throttled(context: list):
+async def call_ai_throttled(context: list[dict]):
     buffer = []
     last_yield = time.monotonic()
 
-    async for text in call_ai(context):
+    async for text in call_gemini(context):
         buffer.append(text)
         now = time.monotonic()
         if now - last_yield >= 1.0:
@@ -97,3 +108,87 @@ async def call_ai_throttled(context: list):
     # 输出剩余内容
     if buffer:
         yield "".join(buffer)
+
+
+class RoutingResult(BaseModel):
+    should_respond: bool
+    is_reply: bool
+
+
+async def route_response(context: list):
+    prompt = f"""
+你是一个群聊消息助手。根据最新的群聊记录，判断AI助手是否应该发言。
+AI助手的名称是: {store.BOT_NAME}，ID是: {store.BOT_USERNAME}。
+
+## 输出格式（严格 JSON，不要输出其他内容）
+"should_respond": boolean // Whether to respond
+"is_reply": boolean // 是否直接回复最新消息
+
+## Respond when:
+- Directly mentioned or asked a question
+- You can add genuine value (info, insight, help)
+- Something witty/funny fits naturally
+- Correcting important misinformation
+- Summarizing when asked
+
+## Stay silent when:
+- It’s just casual banter between humans
+- Someone already answered the question
+- Your response would just be “yeah” or “nice”
+- The conversation is flowing fine without you
+- Adding a message would interrupt the vibe
+- Stay silent if you don’t know what to say
+
+## Important rules:
+- The human rule: Humans in group chats don’t respond to every single message. Neither should you. Quality > quantity. If you wouldn’t send it in a real group chat with friends, don’t send it.
+- Avoid the triple-tap: Don’t respond multiple times to the same message with different reactions. One thoughtful response beats three fragments.
+- Participate, don’t dominate.
+
+## is_reply 字段表示是否直接回复最新消息
+- true：最新消息中直接提到了你，或者你的回应是特别针对最新消息的
+- false：主动加入话题，不针对特定消息的
+"""
+
+    async with httpx.AsyncClient(
+        timeout=60, base_url=os.environ.get("LOCAL_ENDPOINT", "http://127.0.0.1:8080")
+    ) as client:
+        before = time.monotonic()
+        r = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "system", "content": prompt}, *context],
+                "chat_template_kwargs": {"enable_thinking": False},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": RoutingResult.__name__,
+                        "schema": RoutingResult.model_json_schema(),
+                        "strict": True,
+                    },
+                },
+            },
+        )
+        after = time.monotonic()
+        if r.status_code != 200:
+            await r.aread()
+            raise RuntimeError(f"{r.status_code}: {r.text}")
+        logging.info(f"Local ai responed in {after - before:.2f} seconds")
+
+        result = RoutingResult.model_validate_json(
+            r.json()["choices"][0]["message"]["content"]
+        )
+        return result
+
+
+async def should_reply(update: Update, history) -> RoutingResult:
+    if update.message.chat.type == "private":
+        return RoutingResult(should_respond=True, is_reply=False)
+    else:
+        return await route_response(history)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    message = [{"role": "user", "content": "哈基米南北绿豆"}]
+    result = asyncio.run(route_response(message))
+    print(result)
