@@ -85,13 +85,12 @@ async def call_gemini(context: list):
                 if not line or line == "data: [DONE]":
                     continue
                 if line.startswith("data: "):
-                    chunk = json.loads(line[6:])
                     try:
+                        chunk = json.loads(line[6:])
                         text = chunk["choices"][0]["delta"]["content"]
                         yield text
-                    except KeyError, IndexError:
-                        continue
-
+                    except Exception:
+                        pass
 
 async def call_ai_throttled(context: list[dict]):
     buffer = []
