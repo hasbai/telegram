@@ -1,3 +1,4 @@
+from smolagents.models import ChatMessage
 from telegram.ext import ContextTypes
 
 
@@ -18,10 +19,11 @@ class ContextManager:
         ]
 
     def add_chat(self, content: str, role: str = "user"):
-        self.context.chat_data["history"].append({"role": role, "content": content})
+        self.context.chat_data["history"].append(ChatMessage(role, content))
 
     @property
     def history(self) -> list[dict]:
+
         return self.context.chat_data["history"]
 
 

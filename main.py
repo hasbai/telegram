@@ -1,9 +1,10 @@
 import logging
 import os
 
-from telegram import Message, MessageOrigin, Update
-from telegram.constants import MessageEntityType
+from dotenv import load_dotenv
+from telegram import Bot, BotCommand, Message, MessageOrigin, Update
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
@@ -12,13 +13,14 @@ from telegram.ext import (
 )
 from telegramify_markdown import markdownify
 
-import ai
-import crawler
+import agent
+import message_db
 import store
 from utils import should_reply
 
 logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.WARNING)
 logger = logging.getLogger(__name__)
+load_dotenv()
 
 
 def format_message(message: Message) -> str:
@@ -39,45 +41,33 @@ def format_message(message: Message) -> str:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await message_db.save_message(update.message)
+    return
     text = format_message(update.message)
     logger.warning(text)
 
     with store.ContextManager(context) as c:
         c.add_chat(text)
 
-        routing_result = ai.RoutingResult(
-            should_respond=should_reply(update, context), is_reply=True
-        )
-        if not routing_result.should_respond:
+        if not should_reply(update, context):
             return
 
         await update.message.set_reaction("👀")
 
-        urls = []
-        for k, v in update.message.parse_entities().items():
-            if k.type == MessageEntityType.URL:
-                urls.append(v)
-        text += await crawler.crawl(urls)
+        # urls = []
+        # for k, v in update.message.parse_entities().items():
+        #     if k.type == MessageEntityType.URL:
+        #         urls.append(v)
+        # text += await crawler.crawl(urls)
 
-        reply = None
-        reply_text = ""
-        async for chunk in ai.call_ai_throttled(c.history):
-            reply_text += chunk
-            if not reply:
-                if routing_result.is_reply:
-                    reply = await update.message.reply_text(
-                        markdownify(reply_text), parse_mode="MarkdownV2"
-                    )
-                else:
-                    reply = await context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=markdownify(reply_text),
-                        parse_mode="MarkdownV2",
-                    )
-            else:
-                await reply.edit_text(markdownify(reply_text), parse_mode="MarkdownV2")
+        result = agent.run(c.history)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=markdownify(result),
+            parse_mode="MarkdownV2",
+        )
 
-        c.add_chat(reply_text, role="assistant")
+        c.add_chat(f"{context.bot.first_name}: {result}", role="assistant")
 
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,11 +87,31 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.exception(context.error)
 
 
+async def set_commands(bot: Bot):
+    await bot.delete_my_commands()
+    await bot.set_my_commands(
+        [
+            BotCommand("info", "用户信息"),
+            BotCommand("chat", "聊天"),
+        ]
+    )
+
+
+async def post_init(app: Application):
+    bot: Bot = app.bot
+    await message_db.init_db()
+    await set_commands(bot)
+    agent.init(name=bot.first_name, username=bot.name)
+
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(os.environ.get("BOT_TOKEN")).build()
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CommandHandler("info", info_command))
     app.add_handler(CommandHandler("chat", handle_message))
+    app.add_handler(MessageHandler(~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
+
+    app.post_init = post_init
+
     app.run_polling()
