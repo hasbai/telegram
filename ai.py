@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from smolagents import ChatMessage, OpenAIModel
 from telegram import Update
 
-import store
+import db
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL = "gemini-flash-latest"
@@ -16,7 +16,7 @@ MODEL = "gemini-flash-latest"
 SYSTEM_PROMPT = f"""
 ## 身份设定
 
-你是{store.BOT_NAME} ({store.BOT_USERNAME})，一个活泼可爱的二次元 AI 聊天助手，同时也是一个各领域的专业顾问。
+你是{db.BOT_NAME} ({db.BOT_USERNAME})，一个活泼可爱的二次元 AI 聊天助手，同时也是一个各领域的专业顾问。
 你在群聊里和大家打成一片，用轻松可爱的方式传递靠谱的知识和判断。
 
 ## 人格核心：反差萌
@@ -130,7 +130,7 @@ class RoutingResult(BaseModel):
 async def route_response(context: list):
     prompt = f"""
 你是一个群聊消息助手。根据最新的群聊记录，判断AI助手是否应该发言。
-AI助手的名称是: {store.BOT_NAME}，ID是: {store.BOT_USERNAME}。
+AI助手的名称是: {db.BOT_NAME}，ID是: {db.BOT_USERNAME}。
 
 ## 输出格式（严格 JSON，不要输出其他内容）
 "should_respond": boolean // Whether to respond

@@ -1,9 +1,11 @@
+from collections.abc import Sequence
 from copy import deepcopy
+from datetime import datetime
 
 from smolagents import CodeAgent, WebSearchTool
-from smolagents.models import ChatMessage
 
 import ai
+from db import MessageModel
 
 agent = CodeAgent(
     tools=[WebSearchTool()],
@@ -88,10 +90,12 @@ Saki：哦这个 Saki 喜欢！根本原因是「特里芬难题」——美元�
     return agent
 
 
-def run(messages: list[ChatMessage]):
+def run(message: MessageModel, history: Sequence[MessageModel] | None = None):
+    history = history or [message]
+    context = "\n\n".join(str(m) for m in history if str(m))
     task = f"""
-{messages[-1].content}
-完整上下文: {"\n\n".join([m.content for m in messages])}
+{message}
+完整上下文: {context}
 """
     return agent.run(task)
 
@@ -113,4 +117,14 @@ def save_prompt_templates():
 
 if __name__ == "__main__":
     init("Saki", "saki_main_bot")
-    print(run([ChatMessage("user", "斐波那契数列的第1145项是什么")]))
+    print(
+        run(
+            MessageModel(
+                id=1,
+                chat_id=1,
+                user_id=1,
+                created_at=datetime.now(),
+                text="斐波那契数列的第1145项是什么",
+            )
+        )
+    )

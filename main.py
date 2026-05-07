@@ -2,7 +2,7 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from telegram import Bot, BotCommand, Message, MessageOrigin, Update
+from telegram import Bot, BotCommand, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -14,8 +14,7 @@ from telegram.ext import (
 from telegramify_markdown import markdownify
 
 import agent
-import message_db
-import store
+import db
 from utils import should_reply
 
 logging.basicConfig(format="[%(levelname)s] %(message)s", level=logging.WARNING)
@@ -23,51 +22,31 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
-def format_message(message: Message) -> str:
-    if not getattr(message, "text"):
-        return ""
-    text = message.text
-    sender = message.from_user.first_name
-
-    if message.forward_origin:
-        if message.forward_origin.type in [MessageOrigin.CHANNEL, MessageOrigin.CHAT]:
-            origin = message.forward_origin.chat.title
-        else:
-            origin = message.forward_origin.sender_user_name
-        sender += f" (Forward from {origin})"
-    if message.reply_to_message:
-        text += f"\n(Reply to {format_message(message.reply_to_message)})"
-    return f"{sender}: {text}"
-
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await message_db.save_message(update.message)
-    return
-    text = format_message(update.message)
+    message = await db.save_message(update.message)
+    text = str(message)
     logger.warning(text)
 
-    with store.ContextManager(context) as c:
-        c.add_chat(text)
+    if not should_reply(update, context):
+        return
 
-        if not should_reply(update, context):
-            return
+    await update.message.set_reaction("👀")
 
-        await update.message.set_reaction("👀")
+    # urls = []
+    # for k, v in update.message.parse_entities().items():
+    #     if k.type == MessageEntityType.URL:
+    #         urls.append(v)
+    # text += await crawler.crawl(urls)
 
-        # urls = []
-        # for k, v in update.message.parse_entities().items():
-        #     if k.type == MessageEntityType.URL:
-        #         urls.append(v)
-        # text += await crawler.crawl(urls)
+    history = await db.get_recent_messages(message.chat_id)
+    result = agent.run(message, history)
+    sent_message = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=markdownify(result),
+        parse_mode="MarkdownV2",
+    )
 
-        result = agent.run(c.history)
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=markdownify(result),
-            parse_mode="MarkdownV2",
-        )
-
-        c.add_chat(f"{context.bot.first_name}: {result}", role="assistant")
+    await db.save_message(sent_message)
 
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,7 +78,7 @@ async def set_commands(bot: Bot):
 
 async def post_init(app: Application):
     bot: Bot = app.bot
-    await message_db.init_db()
+    await db.init_db()
     await set_commands(bot)
     agent.init(name=bot.first_name, username=bot.name)
 
